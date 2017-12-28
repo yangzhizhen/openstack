@@ -1,0 +1,151 @@
+一、测试环境
+节点	数量	型号
+控制	3	浪潮 NF8460M4
+计算	4	HP DL580 G9
+存储	2	3PAR7200
+二、存储配置
+SSH或串口登录至存储，使用startwsapi开启API服务，开启之后可以使用showwsapi命令查看服务状态。
+如果需要手动开启HTTP或者HTTPS服务，可以执行如下命令：
+setwsapi -http enable
+setwsapi -https enable
+三、OpenStack配置
+1、vim cinder-api.conf
+添加如下内容：
+[DEFAULT]
+rpc_response_timeout = 1200
+2、vim cinder-volume.conf
+添加如下内容：
+[DEFAULT]
+# 添加两台后端存储名称
+enabled_backends = 3par7200fc-1,3par7200fc-2
+
+[3par7200fc-1]
+hpe3par_api_url = https://21.16.2.61:8080/api/v1
+hpe3par_username = 3paradm
+hpe3par_password = 3pardata
+san_ip = 21.16.2.61
+san_login = 3paradm
+san_password = 3pardata
+volume_backend_name = 3par7200fc-1
+# Pool Name
+hpe3par_cpg = FC_r5
+volume_driver = cinder.volume.drivers.hpe.hpe_3par_fc.HPE3PARFCDriver
+hpe3par_debug = False
+# 超分策略
+max_over_subscription_ratio = 1.0
+# 预留策略
+reserved_percentage = 10
+
+[3par7200fc-2]
+hpe3par_api_url = https://21.16.2.62:8080/api/v1
+hpe3par_username = 3paradm
+hpe3par_password = 3pardata
+san_ip = 21.16.2.62
+san_login = 3paradm
+san_password = 3pardata
+volume_backend_name = 3par7200fc-2
+hpe3par_cpg = FC_r5
+volume_driver = cinder.volume.drivers.hpe.hpe_3par_fc.HPE3PARFCDriver
+hpe3par_debug = False
+max_over_subscription_ratio = 1.0
+reserved_percentage = 10
+3、vim neutron-server.conf
+添加如下内容：
+[DEFAULT]
+rpc_response_timeout = 1200
+4、vim nova-api.conf
+[DEFAULT]
+rpc_response_timeout = 1200
+block_device_allocate_retries = 300
+block_device_allocate_retries_interval = 8
+
+[libvirt]
+# 启用多路径
+volume_use_multipath = True
+5、vim nova-compute.conf
+添加如下内容：
+[DEFAULT]
+cpu_allocation_ratio = 2.0
+ram_allocation_ratio = 1.0
+block_device_allocate_retries = 300
+block_device_allocate_retries_interval = 8
+
+[libvirt]
+volume_use_multipath = True
+
+6、vim nova-conductor.conf
+添加如下内容：
+[DEFAULT]
+block_device_allocate_retries = 300
+block_device_allocate_retries_interval = 8
+
+[libvirt]
+volume_use_multipath = True
+7、vim nova-scheduler.conf
+添加如下内容：
+[DEFAULT]
+block_device_allocate_retries = 300
+block_device_allocate_retries_interval = 8
+
+[libvirt]
+volume_use_multipath = True
+8、更新服务配置
+kolla-ansible reconfigure -t nova,cinder,neutron-i /root/multinode
+9、由于本次cinder_volume容器部署在控制节点，故在控制节点1及其cinder_volume容器中安装sysfsutils、device-mapper-multipath、sg3_utils软件包。
+1) 安装方式使用 yum localinstall xxx命令，传输方式使用docker cp xxx cinder_volume:xxx。
+2) 安装完成后执行
+mpathconf --enable
+systemctl start multipathd
+systemctl enable multipathd
+systemctl status multipathd
+3) 检查多路径是否生效
+multipath -ll
+10、在cinder_volume容器中安装3parclient
+1) github上下载python-3parclient-master，使用docker cp命令上传至cinder_volume容器
+docker cp python-3parclient-master cinder_volume:/root/
+2) 安装3parclient
+pip install .
+11、提交cinder_volume镜像到部署节点仓库
+1) 提交cinder_volume 到本地仓库
+docker commit cinder_volume 21.16.2.37:4000/lokolla/centos-source-cinder-volume:4.0.3.2
+注意：IP为部署节点IP
+2) 查看是否提交到本地仓库
+docker images
+3) 提交本地镜像到部署节点仓库
+docker push 21.16.2.37:4000/lokolla/centos-source-cinder-volume:4.0.3.2
+4) 检测仓库是否已经包含，进入任意一个控制节点执行 ，查看是否能拉取镜像
+docker pull 21.16.2.37:4000/lokolla/centos-source-cinder-volume:4.0.3.2
+5) 修改muiltnode 升级内容，升级控制节点的cinder_volume 到4.0.3.2版本。
+配置如下：
+[storage]
+controller[01:03]
+controller[01:03] cinder_volume_tag=4.0.3.2
+12、由于本次nova_compute容器部署在计算节点，故在计算节点1及其nova_compute容器中安装sysfsutils、device-mapper-multipath、sg3_utils软件包。
+1) 安装方式使用 yum localinstall xxx命令，传输方式使用docker cp xxx cinder_volume:xxx。
+2) 安装完成后执行
+mpathconf --enable
+systemctl start multipathd
+systemctl enable multipathd
+systemctl status multipathd
+3) 检查多路径是否生效
+multipath -ll
+13、提交nova_compute镜像到部署节点仓库
+1) 提交cinder_volume 到本地仓库
+docker commit nova_compute 21.16.2.37:4000/lokolla/centos-source-nova-compute:4.0.3.2
+注意：IP为部署节点IP
+2) 查看是否提交到本地仓库
+docker images
+3) 提交本地镜像到部署节点仓库
+docker push 21.16.2.37:4000/lokolla/centos-source- nova-compute:4.0.3.2
+4) 检测仓库是否已经包含，进入任意一个控制节点执行 ，查看是否能拉取镜像
+docker pull 21.16.2.37:4000/lokolla/centos-source- nova-compute:4.0.3.2
+5) 修改muiltnode 升级内容，升级计算节点的nova_compute 到4.0.3.2版本。
+配置如下：
+compute[01:04]
+compute[01:04] 
+compute[01:04] nova_compute_tag=4.0.3.2
+14、升级cinder_volume、nova_compute容器
+kolla-ansible upgrade -t nova,cinder -i /root/multinode
+15、vim /etc/kolla/haproxy/haproxy.cfg
+在listen cinder_api段下增加timeout server 20m
+控制节点重启haproxy容器
